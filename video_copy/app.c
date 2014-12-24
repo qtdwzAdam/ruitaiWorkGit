@@ -40,6 +40,14 @@
 #include <ti/sdo/ce/video/videnc.h>
 #include <ti/sdo/ce/trace/gt.h>
 
+#include <ti/sdo/dmai/Dmai.h>
+#include <ti/sdo/dmai/Fifo.h>
+#include <ti/sdo/dmai/Pause.h>
+#include <ti/sdo/dmai/Capture.h>
+#include <ti/sdo/dmai/BufferGfx.h>
+#include <ti/sdo/dmai/Rendezvous.h>
+
+
 #include <string.h>  /* for memset */
 
 #include <stdio.h>
@@ -117,6 +125,8 @@ Int smain(Int argc, String argv[])
     String inFile, outFile;
     Memory_AllocParams allocParams;
 
+
+    Dmai_init();
     if (argc <= 1) {
         inFile = "./in.dat";
         outFile = "./out.dat";

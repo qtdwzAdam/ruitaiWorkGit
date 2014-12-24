@@ -15,10 +15,15 @@ cscope*
 [oO]bj/
 [oO]bjs/
 [Ll]ib/
+[bB]in/
 *.bmp
 *.jpg
 output
 *~
 
 tmp*
-.xdcenv.mak
+.*
+package/
+packages/
+*.mak
+local/
