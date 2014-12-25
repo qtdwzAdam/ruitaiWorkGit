@@ -58,6 +58,7 @@ Void *displayThrFxn(Void *arg)
     BufferGfx_Dimensions    srcDim, dstDim;
     Int                     fifoRet;
 
+    printf ( "Inside the displayThrFxn.\n" );
     /* Create the display device instance */
     dAttrs.numBufs = NUM_DISPLAY_BUFS;
     dAttrs.videoStd = envp->videoStd;

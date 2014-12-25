@@ -4,6 +4,9 @@
 #include <ti/sdo/ce/video/viddec.h>
 #include <ti/sdo/ce/video/videnc.h>
 #include <ti/sdo/ce/trace/gt.h>
+#include <sys/time.h>
+#include <sys/resource.h>
+
 
 #include <ti/sdo/dmai/Dmai.h>
 #include <ti/sdo/dmai/Fifo.h>
@@ -140,7 +143,7 @@ Int smain(Int argc, String argv[])
     Fifo_Attrs              fAttrs              = Fifo_Attrs_DEFAULT;
     Rendezvous_Handle       hRendezvousCapStd   = NULL;
     Rendezvous_Handle       hRendezvousInit     = NULL;
-    Rendezvous_Handle       hRendezvousend  = NULL;
+    Rendezvous_Handle       hRendezvousCleanup  = NULL;
     Pause_Handle            hPauseProcess       = NULL;
     Pause_Handle            hPausePrime         = NULL;
     UI_Handle               hUI                 = NULL;
@@ -162,30 +165,23 @@ Int smain(Int argc, String argv[])
     Dmai_clear(displayEnv);
     Dmai_clear(ctrlEnv);
 
-    /* Parse the arguments given to the app and set the app environment */
-//    parseArgs(argc, argv, &args);
-
     printf("Encodedecode demo started.\n");
 
     /* Initialize the mutex which protects the global data */
     pthread_mutex_init(&gbl.mutex, NULL);
 
     /* Set the priority of this whole process to max (requires root) */
-//    setpriority(PRIO_PROCESS, 0, -20);
+    setpriority(PRIO_PROCESS, 0, -20);
 
     /* Initialize Davinci Multimedia Application Interface */
     Dmai_init();
-
-    /* Initialize the logs. Must be done after CERuntime_init() */
-//    TraceUtil_start(engine->engineName);
 
     initMask |= LOGSINITIALIZED;
 
     /* Set up the user interface */
 //    hUI = uiSetup(&args);
-
 //    if (hUI == NULL) {
-//        end(EXIT_FAILURE);
+//        goto end;
 //    }
     /* reset, load, and start DSP Engine */
     if ((ce = Engine_open(engine->engineName, NULL, NULL)) == NULL) {
@@ -216,7 +212,7 @@ Int smain(Int argc, String argv[])
 
     if (hPauseProcess == NULL || hPausePrime == NULL) {
         ERR("Failed to create Pause objects\n");
-        end(EXIT_FAILURE);
+        goto end;
     }
 
     numThreads = 4;
@@ -224,13 +220,162 @@ Int smain(Int argc, String argv[])
     /* Create the objects which synchronizes the thread init and end */
     hRendezvousCapStd  = Rendezvous_create(2, &rzvAttrs);
     hRendezvousInit = Rendezvous_create(numThreads, &rzvAttrs);
-    hRendezvousend = Rendezvous_create(numThreads, &rzvAttrs);
+    hRendezvousCleanup = Rendezvous_create(numThreads, &rzvAttrs);
 
     if (hRendezvousCapStd  == NULL || hRendezvousInit == NULL || 
-        hRendezvousend == NULL) {
+        hRendezvousCleanup == NULL) {
         ERR("Failed to create Rendezvous objects\n");
-        end(EXIT_FAILURE);
+        goto end;
     }
+    /* Create the display fifos */
+    displayEnv.hInFifo = Fifo_create(&fAttrs);
+    displayEnv.hOutFifo = Fifo_create(&fAttrs);
+
+    if (displayEnv.hInFifo == NULL || displayEnv.hOutFifo == NULL) {
+        ERR("Failed to create display fifos\n");
+        goto end;
+    }
+
+    /* Initialize the thread attributes */
+    if (pthread_attr_init(&attr)) {
+        ERR("Failed to initialize thread attrs\n");
+        goto end;
+    }
+
+    /* Force the thread to use custom scheduling attributes */
+    if (pthread_attr_setinheritsched(&attr, PTHREAD_EXPLICIT_SCHED)) {
+        ERR("Failed to set schedule inheritance attribute\n");
+        goto end;
+    }
+
+    /* Set the thread to be fifo real time scheduled */
+    if (pthread_attr_setschedpolicy(&attr, SCHED_FIFO)) {
+        ERR("Failed to set FIFO scheduling policy\n");
+        goto end;
+    }
+    
+    //
+    //
+    //
+    //
+    /* Set the display thread priority */
+    schedParam.sched_priority = DISPLAY_THREAD_PRIORITY;
+    if (pthread_attr_setschedparam(&attr, &schedParam)) {
+        ERR("Failed to set scheduler parameters\n");
+        goto end;
+    }
+
+    /* Create the display thread */
+    displayEnv.displayOutput      = args.displayOutput;
+    displayEnv.videoStd           = args.videoStd;
+    displayEnv.hRendezvousInit    = hRendezvousInit;
+    displayEnv.hRendezvousCleanup = hRendezvousCleanup;
+    displayEnv.hPauseProcess      = hPauseProcess;
+    displayEnv.hPausePrime        = hPausePrime;
+    displayEnv.osd                = args.osd;
+    printf ( "I'm here of displaythread create.\n" );
+
+    if (pthread_create(&displayThread, &attr, displayThrFxn, &displayEnv)) {
+        ERR("Failed to create display thread\n");
+        goto end;
+    }
+
+    initMask |= DISPLAYTHREADCREATED;
+
+    //
+    //
+    //
+    /* Set the capture thread priority */
+    schedParam.sched_priority = CAPTURE_THREAD_PRIORITY;
+    if (pthread_attr_setschedparam(&attr, &schedParam)) {
+        ERR("Failed to set scheduler parameters\n");
+        goto end;
+    }
+
+    /* Create the capture fifos */
+    captureEnv.hInFifo = Fifo_create(&fAttrs);
+    captureEnv.hOutFifo = Fifo_create(&fAttrs);
+
+    if (captureEnv.hInFifo == NULL || captureEnv.hOutFifo == NULL) {
+        ERR("Failed to create capture fifos\n");
+        goto end;
+    }
+
+    /* Create the capture thread */
+    captureEnv.hRendezvousInit    = hRendezvousInit;
+    captureEnv.hRendezvousCapStd  = hRendezvousCapStd;
+    captureEnv.hRendezvousCleanup = hRendezvousCleanup;
+    captureEnv.hPauseProcess      = hPauseProcess;
+    captureEnv.imageWidth         = args.imageWidth;
+    captureEnv.imageHeight        = args.imageHeight;
+    captureEnv.videoInput         = args.videoInput;
+    captureEnv.deinterlace        = args.deinterlace;
+
+    if (pthread_create(&captureThread, &attr, captureThrFxn, &captureEnv)) {
+        ERR("Failed to create capture thread\n");
+        goto end;
+    }
+
+    initMask |= CAPTURETHREADCREATED;
+
+        /*
+         * Once the capture thread has deteceted the vide standard, make it
+         * available to other threads and update the user interface.  The
+         * capture thread will set the detected video standard in the capture
+         * environment.
+         */
+    Rendezvous_meet(hRendezvousCapStd);
+
+    /* Set the video thread priority */
+    schedParam.sched_priority = VIDEO_THREAD_PRIORITY;
+    if (pthread_attr_setschedparam(&attr, &schedParam)) {
+        ERR("Failed to set scheduler parameters\n");
+        goto end;
+    }
+
+    /* Create the video thread */
+    videoEnv.hRendezvousInit    = hRendezvousInit;
+    videoEnv.hRendezvousCleanup = hRendezvousCleanup;
+    videoEnv.hPauseProcess      = hPauseProcess;
+    videoEnv.hPausePrime        = hPausePrime;
+    videoEnv.hCaptureOutFifo    = captureEnv.hOutFifo;
+    videoEnv.hCaptureInFifo     = captureEnv.hInFifo;
+    videoEnv.hDisplayOutFifo    = displayEnv.hOutFifo;
+    videoEnv.hDisplayInFifo     = displayEnv.hInFifo;
+    videoEnv.videoBitRate       = args.videoBitRate;
+    videoEnv.passThrough        = args.passThrough;
+    videoEnv.engineName         = engine->engineName;
+    videoEnv.videoDecoder       = engine->videoDecoders[0].codecName;
+    videoEnv.decParams          = engine->videoDecoders[0].params;
+    videoEnv.decDynParams       = engine->videoDecoders[0].dynParams;
+    videoEnv.videoEncoder       = engine->videoEncoders[0].codecName;
+    videoEnv.encParams          = engine->videoEncoders[0].params;
+    videoEnv.encDynParams       = engine->videoEncoders[0].dynParams;
+    videoEnv.imageWidth         = captureEnv.imageWidth;
+    videoEnv.imageHeight        = captureEnv.imageHeight;
+
+    if (pthread_create(&videoThread, &attr, videoThrFxn, (Void *) &videoEnv)) {
+        ERR("Failed to create video thread\n");
+        goto end;
+    }
+
+    initMask |= VIDEOTHREADCREATED;
+
+    /* Main thread becomes the control thread */
+    ctrlEnv.hRendezvousInit    = hRendezvousInit;
+    ctrlEnv.hRendezvousCleanup = hRendezvousCleanup;
+    ctrlEnv.hPauseProcess      = hPauseProcess;
+    ctrlEnv.keyboard           = args.keyboard;
+    ctrlEnv.time               = args.time;
+    ctrlEnv.hUI                = hUI;
+    ctrlEnv.engineName         = engine->engineName;
+
+    ret = ctrlThrFxn(&ctrlEnv);
+
+    if (ret == THREAD_FAILURE) {
+        status = EXIT_FAILURE;
+    }
+
 
 
 

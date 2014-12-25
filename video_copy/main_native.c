@@ -49,6 +49,8 @@ GT_Mask curMask = {0,0};
  */
 Int main(Int argc, String argv[])
 {
+    printf ( "This is in the main_native.c's main fun.\n" );
+
     /* init Codec Engine */
     CERuntime_init();
 
