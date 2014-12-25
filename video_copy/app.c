@@ -1,38 +1,3 @@
-/* 
- * Copyright (c) 2010, Texas Instruments Incorporated
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- * *  Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *
- * *  Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in the
- *    documentation and/or other materials provided with the distribution.
- *
- * *  Neither the name of Texas Instruments Incorporated nor the names of
- *    its contributors may be used to endorse or promote products derived
- *    from this software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
- * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
- * OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
- * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
- * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- * 
- */
-/*
- *  ======== app.c ========
- */
 #include <xdc/std.h>
 #include <ti/sdo/ce/Engine.h>
 #include <ti/sdo/ce/osal/Memory.h>
@@ -48,10 +13,52 @@
 #include <ti/sdo/dmai/Rendezvous.h>
 
 
+#include "display.h"
+#include "capture.h"
+#include "video.h"
+#include "../demo.h"
+#include "../ctrl.h"
+
 #include <string.h>  /* for memset */
 
 #include <stdio.h>
 #include <stdlib.h>
+
+/* The levels of initialization */
+#define LOGSINITIALIZED         0x1
+#define DISPLAYTHREADCREATED    0x2
+#define CAPTURETHREADCREATED    0x4
+#define VIDEOTHREADCREATED      0x8
+
+/* Thread priorities */
+#define CAPTURE_THREAD_PRIORITY sched_get_priority_max(SCHED_FIFO) - 1
+#define VIDEO_THREAD_PRIORITY   sched_get_priority_max(SCHED_FIFO) - 1
+#define DISPLAY_THREAD_PRIORITY sched_get_priority_max(SCHED_FIFO)
+
+typedef struct Args Args;
+struct Args {
+    Display_Output          displayOutput;
+    VideoStd_Type           videoStd;
+    Char                   *videoStdString;
+    Int                     videoBitRate;
+    Capture_Input           videoInput;
+    Int                     passThrough;
+    Int                     keyboard;
+    Int                     time;
+    Int                     osd;
+    Int                     interface;
+    Int                     deinterlace;
+    Int32                   imageWidth;
+    Int32                   imageHeight;
+};
+
+#define DEFAULT_ARGS { Display_Output_COMPOSITE, VideoStd_D1_NTSC, "D1 NTSC", \
+                       -1, Capture_Input_COMPOSITE, FALSE, FALSE, \
+                       FOREVER, FALSE, FALSE, TRUE, 0, 0 }
+
+/* Global variable declarations for this application */
+GlobalData gbl = GBL_DATA_INIT;
+
 
 /*
  * If an XDAIS algorithm _may_ use DMA, buffers provided to it need to be
@@ -125,8 +132,108 @@ Int smain(Int argc, String argv[])
     String inFile, outFile;
     Memory_AllocParams allocParams;
 
+    Args                    args                = DEFAULT_ARGS;
+    Uns                     initMask            = 0;
+    Int                     status              = EXIT_SUCCESS;
+    Pause_Attrs             pAttrs              = Pause_Attrs_DEFAULT;
+    Rendezvous_Attrs        rzvAttrs            = Rendezvous_Attrs_DEFAULT;
+    Fifo_Attrs              fAttrs              = Fifo_Attrs_DEFAULT;
+    Rendezvous_Handle       hRendezvousCapStd   = NULL;
+    Rendezvous_Handle       hRendezvousInit     = NULL;
+    Rendezvous_Handle       hRendezvousend  = NULL;
+    Pause_Handle            hPauseProcess       = NULL;
+    Pause_Handle            hPausePrime         = NULL;
+    UI_Handle               hUI                 = NULL;
+    struct sched_param      schedParam;
+    Int                     numThreads;
+    pthread_t               videoThread;
+    pthread_t               displayThread;
+    pthread_t               captureThread;
+    pthread_attr_t          attr;
+    VideoEnv                videoEnv;
+    CaptureEnv              captureEnv;
+    DisplayEnv              displayEnv;
+    CtrlEnv                 ctrlEnv;
+    Void                   *ret;
 
+    /* Zero out the thread environments */
+    Dmai_clear(videoEnv);
+    Dmai_clear(captureEnv);
+    Dmai_clear(displayEnv);
+    Dmai_clear(ctrlEnv);
+
+    /* Parse the arguments given to the app and set the app environment */
+//    parseArgs(argc, argv, &args);
+
+    printf("Encodedecode demo started.\n");
+
+    /* Initialize the mutex which protects the global data */
+    pthread_mutex_init(&gbl.mutex, NULL);
+
+    /* Set the priority of this whole process to max (requires root) */
+//    setpriority(PRIO_PROCESS, 0, -20);
+
+    /* Initialize Davinci Multimedia Application Interface */
     Dmai_init();
+
+    /* Initialize the logs. Must be done after CERuntime_init() */
+//    TraceUtil_start(engine->engineName);
+
+    initMask |= LOGSINITIALIZED;
+
+    /* Set up the user interface */
+//    hUI = uiSetup(&args);
+
+//    if (hUI == NULL) {
+//        end(EXIT_FAILURE);
+//    }
+    /* reset, load, and start DSP Engine */
+    if ((ce = Engine_open(engine->engineName, NULL, NULL)) == NULL) {
+        fprintf(stderr, "%s: error: can't open engine %s\n",
+            progName, engineName);
+        goto end;
+    }
+
+    /* allocate and initialize video decoder on the engine */
+    dec = VIDDEC_create(ce, decoderName, NULL);
+    if (dec == NULL) {
+        printf( "App-> ERROR: can't open codec %s\n", decoderName);
+        goto end;
+    }
+    printf ( "successed in create the viddec \n" );
+
+    /* allocate and initialize video encoder on the engine */
+    enc = VIDENC_create(ce, encoderName, NULL);
+    if (enc == NULL) {
+        fprintf(stderr, "%s: error: can't open codec %s\n",
+            progName, encoderName);
+        goto end;
+    }
+
+    /* Create the Pause objects */
+    hPauseProcess = Pause_create(&pAttrs);
+    hPausePrime = Pause_create(&pAttrs);
+
+    if (hPauseProcess == NULL || hPausePrime == NULL) {
+        ERR("Failed to create Pause objects\n");
+        end(EXIT_FAILURE);
+    }
+
+    numThreads = 4;
+
+    /* Create the objects which synchronizes the thread init and end */
+    hRendezvousCapStd  = Rendezvous_create(2, &rzvAttrs);
+    hRendezvousInit = Rendezvous_create(numThreads, &rzvAttrs);
+    hRendezvousend = Rendezvous_create(numThreads, &rzvAttrs);
+
+    if (hRendezvousCapStd  == NULL || hRendezvousInit == NULL || 
+        hRendezvousend == NULL) {
+        ERR("Failed to create Rendezvous objects\n");
+        end(EXIT_FAILURE);
+    }
+
+
+
     if (argc <= 1) {
         inFile = "./in.dat";
         outFile = "./out.dat";
@@ -168,29 +275,7 @@ Int smain(Int argc, String argv[])
         goto end;
     }
 
-    /* reset, load, and start DSP Engine */
-    if ((ce = Engine_open(engineName, NULL, NULL)) == NULL) {
-        fprintf(stderr, "%s: error: can't open engine %s\n",
-            progName, engineName);
-        goto end;
-    }
-
-    /* allocate and initialize video decoder on the engine */
-    dec = VIDDEC_create(ce, decoderName, NULL);
-    if (dec == NULL) {
-        printf( "App-> ERROR: can't open codec %s\n", decoderName);
-        goto end;
-    }
-    printf ( "successed in create the viddec \n" );
-
-    /* allocate and initialize video encoder on the engine */
-    enc = VIDENC_create(ce, encoderName, NULL);
-    if (enc == NULL) {
-        fprintf(stderr, "%s: error: can't open codec %s\n",
-            progName, encoderName);
-        goto end;
-    }
-
+    
     /* use engine to encode, then decode the data */
     encode_decode(enc, dec, in, out);
 

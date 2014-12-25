@@ -8,7 +8,7 @@
 # ============================================================================
 
 ROOTDIR = /usr/local/icetek-dm6446-kbe/dvsdk_2_00_00_22
-TARGET = $(notdir $(CURDIR))
+TARGET = output
 
 include $(ROOTDIR)/Rules.make
 
@@ -71,7 +71,6 @@ install:	$(if $(wildcard $(TARGET)), install_$(TARGET))
 install_$(TARGET):
 	@install -d $(EXEC_DIR)
 	@install $(TARGET) $(EXEC_DIR)
-	@install $(TARGET).txt $(EXEC_DIR)
 	@echo
 	@echo Installed $(TARGET) binaries to $(EXEC_DIR)..
 
