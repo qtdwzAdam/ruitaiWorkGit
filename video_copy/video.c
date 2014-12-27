@@ -18,11 +18,16 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 #include <xdc/std.h>
 
 #include <ti/sdo/ce/Engine.h>
 #include <ti/sdo/ce/osal/Memory.h>
+#include <ti/sdo/ce/video1/videnc1.h>
+
+#include <ti/sdo/dmai/Dmai.h>
+#include <ti/sdo/dmai/ColorSpace.h>
 
 #include <ti/sdo/dmai/Fifo.h>
 #include <ti/sdo/dmai/Pause.h>
@@ -30,8 +35,15 @@
 #include <ti/sdo/dmai/VideoStd.h>
 #include <ti/sdo/dmai/BufferGfx.h>
 #include <ti/sdo/dmai/Rendezvous.h>
+
+
 #include <ti/sdo/dmai/ce/Vdec2.h>
+#include <ti/sdo/dmai/ce/Venc.h>
 #include <ti/sdo/dmai/ce/Venc1.h>
+
+#include <ti/sdo/ce/video/viddec.h>
+#include <ti/sdo/ce/video/videnc.h>
+
 
 #include "video.h"
 #include "../demo.h"
@@ -43,6 +55,191 @@
 /* The masks to use for knowing when a buffer is free */
 #define CODEC_FREE              0x1
 #define DISPLAY_FREE            0x2
+#define MODULE_NAME     "Venc"
+
+typedef struct Venc_Object {
+    VIDENC_Handle          hEncode;
+    Int32                  minNumInBufs;
+    Int32                  minInBufSize[XDM_MAX_IO_BUFFERS];
+    Int32                  minNumOutBufs;
+    Int32                  minOutBufSize[XDM_MAX_IO_BUFFERS];
+} Venc_Object;
+
+
+/******************************************************************************
+ * Venc_create
+ ******************************************************************************/
+Venc_Handle dwz_Venc_create(Engine_Handle hEngine, Char *codecName,
+                        VIDENC_Params *params, VIDENC_DynamicParams *dynParams)
+{
+    Venc_Handle             hVe;
+    VIDENC_Status           encStatus;
+    XDAS_Int32              status;
+    VIDENC_Handle           hEncode;
+
+        printf ( "dsfsfsidiaole!!!!!\n\n\n\n" );
+    if (hEngine == NULL || codecName == NULL ||
+        params == NULL || dynParams == NULL) {
+        Dmai_err0("Cannot pass null for engine, codec name, params or "
+                  "dynamic params\n");
+        return NULL;
+    }
+
+    hVe = (Venc_Handle)calloc(1, sizeof(Venc_Object));
+
+    if (hVe == NULL) {
+        Dmai_err0("Failed to allocate space for Venc Object\n");
+        return NULL;
+    }
+
+    /* Create video encoder instance */
+    hEncode = VIDENC_create(hEngine, codecName, params);
+
+    if (hEncode == NULL) {
+        Dmai_err0("Failed to open video encode algorithm\n");
+        return NULL;
+    }
+
+    /* Set video encoder dynamic parameters */
+    encStatus.size = sizeof(VIDENC_Status);
+    status = VIDENC_control(hEncode, XDM_SETPARAMS, dynParams, &encStatus);
+
+    if (status != VIDENC_EOK) {
+        printf ( "sidiaole!!!!!\n\n\n\n" );
+        Dmai_err1("XDM_SETPARAMS failed, status=%d\n", status);
+        VIDENC_delete(hEncode);
+        free(hVe);
+        return NULL;
+    }
+
+    /* Get buffer information from video encoder */
+    status = VIDENC_control(hEncode, XDM_GETBUFINFO, dynParams, &encStatus);
+
+    if (status != VIDENC_EOK) {
+        Dmai_err0("XDM_GETBUFINFO control failed\n");
+        VIDENC_delete(hEncode);
+        free(hVe);
+        return NULL;
+    }
+
+    memcpy(hVe->minInBufSize,
+           encStatus.bufInfo.minInBufSize, sizeof(hVe->minInBufSize));
+    hVe->minNumInBufs = encStatus.bufInfo.minNumInBufs;
+
+    memcpy(hVe->minOutBufSize,
+           encStatus.bufInfo.minOutBufSize, sizeof(hVe->minOutBufSize));
+    hVe->minNumOutBufs = encStatus.bufInfo.minNumOutBufs;
+
+    hVe->hEncode = hEncode;
+        
+    return hVe;
+}
+
+/* 
+ * #define MODULE_NAME             "Venc1"
+ * typedef struct Venc1_Object {
+ *     VIDENC1_Handle          hEncode;
+ *     IVIDEO1_BufDesc         reconBufs;
+ *     Int32                   minNumInBufs;
+ *     Int32                   minInBufSize[XDM_MAX_IO_BUFFERS];
+ *     Int32                   minNumOutBufs;
+ *     Int32                   minOutBufSize[XDM_MAX_IO_BUFFERS];
+ *     BufTab_Handle           hInBufTab;
+ *     Buffer_Handle           hFreeBuf;
+ *     VIDENC1_DynamicParams   dynParams;
+ * } Venc1_Object;
+ * 
+ */
+
+/*
+ *  ======== VIDENC_control ========
+ *  This method must be the same for both local and remote invocation;
+ *  each call site in the client might be calling different implementations
+ *  (one that marshalls & sends and one that simply calls).  This API
+ *  abstracts *all* video encoders (both high and low complexity
+ *  encoders are envoked using this method).
+ */
+XDAS_Int32 dwz_VIDENC_control(VIDENC_Handle handle, IVIDENC_Cmd id,
+    IVIDENC_DynamicParams *dynParams, IVIDENC_Status *status)
+{
+    XDAS_Int32 retVal = VIDENC_EFAIL;
+
+    VIDENC_DynamicParams refDynParams;
+    XDAS_Int32 refStatusSize;
+
+    /*
+     * Note, we assign "VISA_isChecked()" results to a local variable
+     * rather than repeatedly query it throughout this fxn because
+     * someday we may allow dynamically changing the global
+     * 'VISA_isChecked()' value on the fly.  If we allow that, we need
+     * to ensure the value stays consistent in the context of this
+     * call.
+     */
+    Bool checked = VISA_isChecked();
+
+    if (checked) {
+        /* Ensure dynParams and status are non-NULL, per the XDM spec */
+
+        if ((!(XdmUtils_validateExtendedStruct(dynParams, sizeof(*dynParams),
+                "dynParams"))) || (!(XdmUtils_validateExtendedStruct(status,
+                sizeof(*status), "status")))) {
+            /* for safety, return here before dereferencing and crashing */
+            return (retVal);
+        }
+    }
+
+    GT_6trace(CURTRACE, GT_ENTER, "VIDENC_control> "
+        "Enter (handle=0x%x, id=%d, dynParams=0x%x (size=0x%x), "
+        "status=0x%x (size=0x%x)\n",
+        handle, id, dynParams, dynParams->size, status, status->size);
+
+    if (handle) {
+        IVIDENC_Fxns *fxns =
+            (IVIDENC_Fxns *)VISA_getAlgFxns((VISA_Handle)handle);
+        IVIDENC_Handle alg = VISA_getAlgHandle((VISA_Handle)handle);
+
+        if (fxns && (alg != NULL)) {
+            Log_printf(ti_sdo_ce_dvtLog, "%s", (Arg)"VIDENC:control",
+                (Arg)handle, (Arg)0);
+
+            if (checked) {
+
+                /*
+                 * Make a reference copy of dynParams, status->size, and
+                 * status->data.bufSize so we can check that the codec
+                 * didn't modify these read-only fields during control().
+                 */
+                refDynParams = *dynParams;
+                refStatusSize = status->size;
+            }
+
+            VISA_enter((VISA_Handle)handle);
+            retVal = fxns->control(alg, id, dynParams, status);
+            VISA_exit((VISA_Handle)handle);
+
+            if (checked) {
+                /* ensure the codec didn't modify the read-only dynParams */
+                if (memcmp(&refDynParams, dynParams, sizeof(*dynParams)) != 0) {
+                    GT_1trace(CURTRACE, GT_7CLASS,
+                        "ERROR> codec (0x%x) modified read-only dynParams "
+                        "struct!\n", handle);
+                }
+
+                /* ensure the codec didn't change status->size */
+                if (status->size != refStatusSize) {
+                    GT_1trace(CURTRACE, GT_7CLASS,
+                        "ERROR> codec (0x%x) modified read-only status->size "
+                        "field!\n", handle);
+                }
+            }
+        }
+    }
+
+    GT_2trace(CURTRACE, GT_ENTER, "VIDENC_control> "
+        "Exit (handle=0x%x, retVal=0x%x)\n", handle, retVal);
+
+    return (retVal);
+}
 
 /******************************************************************************
  * encodedecode
@@ -205,8 +402,8 @@ Void *videoThrFxn(Void *arg)
     Buffer_Handle           hVidBuf, hDispBuf, hDstBuf;
     VIDDEC2_Params         *decParams;
     VIDDEC2_DynamicParams  *decDynParams;
-    VIDENC1_Params         *encParams;
-    VIDENC1_DynamicParams  *encDynParams;
+    VIDENC_Params          *encParams;
+    VIDENC_DynamicParams   *encDynParams;
     Int32                   bufSize;
     Int                     fifoRet;
     Int                     bufIdx;
@@ -238,7 +435,7 @@ Void *videoThrFxn(Void *arg)
     else {
         /* Open the codec engine */
         hEngine = Engine_open(envp->engineName, NULL, NULL);
-        printf ( "engineName is : %d\n" , envp->engineName);
+        printf ( "engineName is : %s\n" , envp->engineName);
 
         if (hEngine == NULL) {
             ERR("Failed to open codec engine %s\n", envp->engineName);
@@ -272,7 +469,8 @@ Void *videoThrFxn(Void *arg)
         encDynParams->inputHeight   = encParams->maxHeight;
 
         /* Create the video encoder */
-        hVe1 = Venc1_create(hEngine, envp->videoEncoder,
+//        hVe1 = Venc1_create(hEngine, envp->videoEncoder,
+        hVe1 = dwz_Venc_create(hEngine, envp->videoEncoder,
                             encParams, encDynParams);
         if (hVe1 == NULL) {
             ERR("Failed to create video encoder: %s\n", envp->videoEncoder);
