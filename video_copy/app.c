@@ -345,6 +345,7 @@ Int smain(Int argc, String argv[])
     videoEnv.videoBitRate       = args.videoBitRate;
     videoEnv.passThrough        = args.passThrough;
     videoEnv.engineName         = engine->engineName;
+    printf ( "enginename is :: %s\n", engine->engineName );
     videoEnv.videoDecoder       = engine->videoDecoders[0].codecName;
     videoEnv.decParams          = engine->videoDecoders[0].params;
     videoEnv.decDynParams       = engine->videoDecoders[0].dynParams;

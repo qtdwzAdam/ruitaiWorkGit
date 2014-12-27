@@ -8,7 +8,7 @@
 # ============================================================================
 
 ROOTDIR = /usr/local/icetek-dm6446-kbe/dvsdk_2_00_00_22
-TARGET = output
+TARGET = $(notdir $(CURDIR))
 
 include $(ROOTDIR)/Rules.make
 
@@ -49,6 +49,8 @@ LD_FLAGS += -L$(LINUXLIBS)/lib -lpthread -lpng -ljpeg -lfreetype -lasound -lz
 
 LD_LIBS += $(DMAI_INSTALL_DIR)/packages/ti/sdo/dmai/lib/dmai_linux_dm6446.a470MV
 LD_LIBS += $(DVSDKDEMO)/packages/ti/sdo/simplewidget/lib/simplewidget_dm6446.a470MV
+LD_LIBS += /usr/local/icetek-dm6446-kbe/dvsdk_2_00_00_22/codec_engine_2_25_05_16/packages/ti/sdo/ce/video1/lib/debug/videnc1.a470uC
+LD_LIBS += /usr/local/icetek-dm6446-kbe/dvsdk_2_00_00_22/codec_engine_2_25_05_16/packages/ti/sdo/ce/video2/lib/debug/viddec2.a470uC
 
 COMPILE.c = $(VERBOSE) $(CSTOOL_PREFIX)gcc $(C_FLAGS) $(CPP_FLAGS) -c
 LINK.c = $(VERBOSE) $(CSTOOL_PREFIX)gcc $(LD_FLAGS)
